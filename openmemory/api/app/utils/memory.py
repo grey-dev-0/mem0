@@ -236,27 +236,70 @@ def get_default_memory_config():
     
     print(f"Auto-detected vector store: {vector_store_provider} with config: {vector_store_config}")
     
+    # Ensure embedding_model_dims is set for Qdrant with Ollama embeddings
+    if vector_store_provider == "qdrant" and "embedding_model_dims" not in vector_store_config:
+        vector_store_config["embedding_model_dims"] = 1024  # qwen3-embedding:0.6b output dims
+
+    fact_extraction_prompt = '''You are a memory extraction system. Extract all meaningful facts, information, and insights from conversations. Focus on:
+
+1. Personal information and preferences
+2. General facts and knowledge
+3. Important details and context
+4. Any information that might be useful for future reference
+
+Examples:
+Input: Hi.
+Output: {"facts": []}
+
+Input: There are branches in trees.
+Output: {"facts": ["Trees have branches"]}
+
+Input: I like pizza and the weather is sunny today.
+Output: {"facts": ["Likes pizza", "Weather is sunny today"]}
+
+Return facts in JSON format: {"facts": ["fact1", "fact2", ...]}
+'''
+
+    update_memory_prompt = '''You are a memory manager. Compare new facts with existing memories and decide:
+
+- ADD: New information not in memory
+- UPDATE: Information that significantly expands or corrects existing memory
+- NONE: Only if information is exactly identical
+- DELETE: Only if information directly contradicts existing memory
+
+Be more permissive in adding new information. Only mark as NONE if the information is truly identical.
+
+Return JSON format:
+{
+    "memory": [
+        {"id": "<id>", "text": "<memory text>", "event": "ADD|UPDATE|DELETE|NONE", "old_memory": "<old text if UPDATE>"}
+    ]
+}
+'''
+
     return {
         "vector_store": {
             "provider": vector_store_provider,
             "config": vector_store_config
         },
         "llm": {
-            "provider": "openai",
+            "provider": "ollama",
             "config": {
-                "model": "gpt-4o-mini",
+                "model": "qwen3:4b-q4_k_m",
                 "temperature": 0.1,
                 "max_tokens": 2000,
-                "api_key": "env:OPENAI_API_KEY"
+                "ollama_base_url": "http://ollama-gpu:11434"
             }
         },
         "embedder": {
-            "provider": "openai",
+            "provider": "ollama",
             "config": {
-                "model": "text-embedding-3-small",
-                "api_key": "env:OPENAI_API_KEY"
+                "model": "qwen3-embedding:0.6b",
+                "ollama_base_url": "http://ollama-gpu:11434"
             }
         },
+        "custom_fact_extraction_prompt": fact_extraction_prompt,
+        "custom_update_memory_prompt": update_memory_prompt,
         "version": "v1.1"
     }
 

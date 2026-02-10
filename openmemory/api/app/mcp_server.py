@@ -21,8 +21,10 @@ import json
 import logging
 import uuid
 
+from typing import List, Optional
+
 from app.database import SessionLocal
-from app.models import Memory, MemoryAccessLog, MemoryState, MemoryStatusHistory
+from app.models import Category, Memory, MemoryAccessLog, MemoryState, MemoryStatusHistory, memory_categories
 from app.utils.db import get_user_and_app
 from app.utils.memory import get_memory_client
 from app.utils.permissions import check_memory_access_permissions
@@ -57,8 +59,8 @@ mcp_router = APIRouter(prefix="/mcp")
 # Initialize SSE transport
 sse = SseServerTransport("/mcp/messages/")
 
-@mcp.tool(description="Add a new memory. This method is called everytime the user informs anything about themselves, their preferences, or anything that has any relevant information which can be useful in the future conversation. This can also be called when the user asks you to remember something.")
-async def add_memories(text: str) -> str:
+@mcp.tool(description="Add a new memory. Stores the provided text as a memory. By default (infer=False), text is stored as-is. Set infer=True to use LLM to extract and deduplicate facts from the text. Optionally provide categories to tag the memory.")
+async def add_memories(text: str, infer: bool = False, category: Optional[str] = None, categories: Optional[List[str]] = None) -> str:
     uid = user_id_var.get(None)
     client_name = client_name_var.get(None)
 
@@ -84,6 +86,7 @@ async def add_memories(text: str) -> str:
 
             response = memory_client.add(text,
                                          user_id=uid,
+                                         infer=infer,
                                          metadata={
                                             "source_app": "openmemory",
                                             "mcp_client": client_name,
@@ -132,6 +135,45 @@ async def add_memories(text: str) -> str:
                             db.add(history)
 
                 db.commit()
+
+            # Attach user-provided categories (if any), in addition to auto-categorization hooks
+            manual = categories or []
+            if category:
+                manual.append(category)
+            # normalize and dedupe
+            manual = sorted({(c or '').strip().lower() for c in manual if c and c.strip()})
+            if manual and isinstance(response, dict) and 'results' in response:
+                add_ids = []
+                for r in response['results']:
+                    if isinstance(r, dict) and r.get('event') == 'ADD' and r.get('id'):
+                        try:
+                            add_ids.append(uuid.UUID(r['id']))
+                        except Exception:
+                            pass
+                if add_ids:
+                    for mid in add_ids:
+                        mem = db.query(Memory).filter(Memory.id == mid).first()
+                        if not mem:
+                            continue
+                        for name in manual:
+                            cat = db.query(Category).filter(Category.name == name).first()
+                            if not cat:
+                                cat = Category(name=name, description=f"Manual category: {name}")
+                                db.add(cat)
+                                db.flush()
+                            exists = db.execute(
+                                memory_categories.select().where(
+                                    (memory_categories.c.memory_id == mem.id) &
+                                    (memory_categories.c.category_id == cat.id)
+                                )
+                            ).first()
+                            if not exists:
+                                db.execute(
+                                    memory_categories.insert().values(
+                                        memory_id=mem.id, category_id=cat.id
+                                    )
+                                )
+                    db.commit()
 
             return json.dumps(response)
         finally:
